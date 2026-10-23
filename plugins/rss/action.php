@@ -9,6 +9,7 @@ $cmd = "get";
 if(isset($_REQUEST['mode']))
 	$cmd = $_REQUEST['mode'];
 $errorsReported = false;
+$fullUpdate = false;
 $mngr = new rRSSManager();
 switch($cmd)
 {
@@ -78,7 +79,12 @@ switch($cmd)
 	}
 	case "get":
 	{
-		$mngr->update(true);
+		// Answer from the cache. Fetching here made the whole list wait for
+		// the slowest feed, past webui.reqtimeout (10s), so one blocked feed
+		// hid every feed. The scheduler keeps the cache fresh; where it is not
+		// running (no local mode / no rTorrent link) or has stalled, the
+		// update runs below, after the cached list has been sent.
+		$fullUpdate = $mngr->isUpdateOverdue();
 		break;
 	}
 	case "refreshgroup":
@@ -370,6 +376,8 @@ if($val===null)
 {
 	$val = $mngr->get();
 	$errorsReported = true;
+	// Tells the UI that fresher data is being fetched and worth re-polling for.
+	$val["refreshing"] = $fullUpdate || $mngr->hasPendingFetch();
 }
 CachedEcho::send(JSON::safeEncode($val), "application/json",true,false);
 
@@ -388,4 +396,16 @@ else
 		$mngr->clearErrors();
 		$mngr->saveState(false);
 	}
+}
+
+if($fullUpdate || $mngr->hasPendingFetch())
+{
+	// Close the response before fetching, so the browser is not kept
+	// waiting (FastCGI and LiteSpeed buffer output until the script ends).
+	if(function_exists('fastcgi_finish_request'))
+		fastcgi_finish_request();
+	else
+	if(function_exists('litespeed_finish_request'))
+		litespeed_finish_request();
+	$mngr->runPendingWork($fullUpdate);
 }
